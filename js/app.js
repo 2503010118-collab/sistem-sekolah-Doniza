@@ -1,9 +1,6 @@
 /* =========================================================
    Sistem Informasi Sekolah - SMAN 10 Tasikmalaya
-   JavaScript sederhana: sidebar, filter tabel, modal, form.
-   Data referensi (jurusan, kelas, mapel, dll) ada di data.js.
-   Catatan: ini versi demo - perubahan data tidak disimpan
-   permanen dan hilang saat halaman dimuat ulang.
+   JavaScript: sidebar, filter tabel, modal, form + LocalStorage.
    ========================================================= */
 (function () {
   'use strict';
@@ -25,7 +22,6 @@
     return null;
   }
 
-  // Isi <select> dengan daftar [{v, t}] (placeholder opsional)
   function setOptions(select, items, placeholder) {
     select.innerHTML = '';
     if (placeholder !== null && placeholder !== undefined) {
@@ -108,7 +104,6 @@
   }
 
   /* ---------- Filter baris tabel ---------- */
-  // Tampilkan baris yang lolos predikat & nomori ulang kolom pertama
   function filterTable(tbody, predicate) {
     var n = 0;
     $$('tr[data-row]', tbody).forEach(function (tr) {
@@ -133,6 +128,12 @@
     $('#Doniza_tanggalHariIni').textContent = pad(now.getDate()) + ' ' + BLN[now.getMonth()] + ' ' + now.getFullYear();
     $('#Doniza_hariIni').textContent = hari;
 
+    // Update angka statistik jika elemen tersedia
+    var statSiswa = $('#Doniza_statSiswa');
+    if (statSiswa) statSiswa.textContent = SISWA.length;
+    var statGuru = $('#Doniza_statGuru');
+    if (statGuru && Array.isArray(GURU)) statGuru.textContent = GURU.length;
+
     var found = false;
     $$('.Doniza_jadwal_hari').forEach(function (blk) {
       var match = blk.getAttribute('data-hari') === hari;
@@ -143,7 +144,7 @@
   }
 
   /* =========================================================
-     SISWA
+     SISWA (Tersinkronisasi dengan LocalStorage)
      ========================================================= */
   function initSiswa() {
     var tbody = $('#Doniza_tbodySiswa');
@@ -170,17 +171,6 @@
       if (selected) selKelas.value = selected;
     }
 
-    function apply() {
-      var jur = getPill(pills);
-      var q = search.value.trim().toLowerCase();
-      filterTable(tbody, function (tr) {
-        var d = tr.dataset;
-        if (d.jurusan !== jur) return false;
-        if (!q) return true;
-        return (d.nama + ' ' + d.nis + ' ' + d.kelasNama).toLowerCase().indexOf(q) > -1;
-      });
-    }
-
     function renderRow(tr, d) {
       var jur = byId(JURUSAN, d.jurusan);
       tr.dataset.nis = d.nis;
@@ -200,6 +190,50 @@
         '<button type="button" class="Doniza_btn_icon Doniza_btn_edit Doniza_js_edit" title="Edit"><i class="fa-solid fa-pen"></i></button>' +
         '<button type="button" class="Doniza_btn_icon Doniza_btn_delete Doniza_js_delete" title="Hapus"><i class="fa-solid fa-trash"></i></button>' +
         '</div></td>';
+    }
+
+    // Muat ulang tabel dari array SISWA (LocalStorage)
+    function rebuildTableFromStorage() {
+      var emptyRow = $('.Doniza_empty_row', tbody);
+      $$('tr[data-row]', tbody).forEach(function (tr) { tr.remove(); });
+      SISWA.forEach(function (s) {
+        var kls = byId(KELAS, s.kelas);
+        var tr = document.createElement('tr');
+        tr.setAttribute('data-row', '');
+        renderRow(tr, {
+          nis: s.nis,
+          nama: s.nama,
+          jurusan: String(s.jurusan),
+          kelas: String(s.kelas),
+          kelasNama: kls ? kls.nama : '',
+          jk: s.jk
+        });
+        tbody.insertBefore(tr, emptyRow);
+      });
+    }
+
+    function syncSiswaStorage() {
+      SISWA = $$('tr[data-row]', tbody).map(function (tr) {
+        return {
+          nis: tr.dataset.nis,
+          nama: tr.dataset.nama,
+          kelas: Number(tr.dataset.kelas),
+          jurusan: Number(tr.dataset.jurusan),
+          jk: tr.dataset.jk
+        };
+      });
+      DB.save('siswa', SISWA);
+    }
+
+    function apply() {
+      var jur = getPill(pills);
+      var q = search.value.trim().toLowerCase();
+      filterTable(tbody, function (tr) {
+        var d = tr.dataset;
+        if (d.jurusan !== jur) return false;
+        if (!q) return true;
+        return (d.nama + ' ' + d.nis + ' ' + d.kelasNama).toLowerCase().indexOf(q) > -1;
+      });
     }
 
     function openForm(tr) {
@@ -232,9 +266,17 @@
       if (e.target.closest('.Doniza_js_edit')) openForm(tr);
       if (e.target.closest('.Doniza_js_delete')) {
         if (confirm('Apakah Anda yakin ingin menghapus data siswa ini?')) {
+          var deletedNis = tr.dataset.nis;
           tr.remove();
+          syncSiswaStorage();
+          // Bersihkan juga data absensi & nilai siswa yang dihapus
+          delete ABSENSI[deletedNis];
+          DB.save('absensi', ABSENSI);
+          NILAI = NILAI.filter(function (r) { return r[0] !== deletedNis; });
+          DB.save('nilai', NILAI);
+
           apply();
-          showAlert('success', 'Data siswa berhasil dihapus.');
+          showAlert('success', 'Data siswa berhasil dihapus secara permanen.');
         }
       }
     });
@@ -258,7 +300,13 @@
         return;
       }
       if (editing) {
+        var oldNis = editing.dataset.nis;
         renderRow(editing, d);
+        if (oldNis !== d.nis) {
+          if (ABSENSI[oldNis]) { ABSENSI[d.nis] = ABSENSI[oldNis]; delete ABSENSI[oldNis]; DB.save('absensi', ABSENSI); }
+          NILAI.forEach(function (r) { if (r[0] === oldNis) r[0] = d.nis; });
+          DB.save('nilai', NILAI);
+        }
       } else {
         var tr = document.createElement('tr');
         tr.setAttribute('data-row', '');
@@ -266,17 +314,19 @@
         var empty = $('.Doniza_empty_row', tbody);
         tbody.insertBefore(tr, empty);
       }
+      syncSiswaStorage();
       setPill(pills, d.jurusan);
       apply();
       closeModal(modal);
       showAlert('success', editing ? 'Sukses! Data siswa berhasil diperbarui.' : 'Sukses! Data siswa berhasil ditambahkan.');
     });
 
+    rebuildTableFromStorage();
     apply();
   }
 
   /* =========================================================
-     GURU
+     GURU (Tersinkronisasi dengan LocalStorage)
      ========================================================= */
   function initGuru() {
     var tbody = $('#Doniza_tbodyGuru');
@@ -288,15 +338,6 @@
     var editing = null;
 
     setOptions(selMapel, MAPEL.map(function (m) { return { v: m.id, t: m.nama }; }), '-- Pilih Mata Pelajaran --');
-
-    function apply() {
-      var q = search.value.trim().toLowerCase();
-      filterTable(tbody, function (tr) {
-        if (!q) return true;
-        var d = tr.dataset;
-        return (d.nama + ' ' + d.nip + ' ' + d.mapelNama).toLowerCase().indexOf(q) > -1;
-      });
-    }
 
     function renderRow(tr, d) {
       tr.dataset.nip = d.nip;
@@ -312,6 +353,41 @@
         '<button type="button" class="Doniza_btn_icon Doniza_btn_edit Doniza_js_edit" title="Edit"><i class="fa-solid fa-pen"></i></button>' +
         '<button type="button" class="Doniza_btn_icon Doniza_btn_delete Doniza_js_delete" title="Hapus"><i class="fa-solid fa-trash"></i></button>' +
         '</div></td>';
+    }
+
+    function syncGuruStorage() {
+      GURU = $$('tr[data-row]', tbody).map(function (tr) {
+        return {
+          nip: tr.dataset.nip,
+          nama: tr.dataset.nama,
+          mapel: tr.dataset.mapel,
+          mapelNama: tr.dataset.mapelNama
+        };
+      });
+      DB.save('guru', GURU);
+    }
+
+    // Jika sudah ada data GURU di localStorage, muat dari localStorage; jika belum, simpan data bawaan HTML
+    if (Array.isArray(GURU)) {
+      var emptyRow = $('.Doniza_empty_row', tbody);
+      $$('tr[data-row]', tbody).forEach(function (tr) { tr.remove(); });
+      GURU.forEach(function (g) {
+        var tr = document.createElement('tr');
+        tr.setAttribute('data-row', '');
+        renderRow(tr, g);
+        tbody.insertBefore(tr, emptyRow);
+      });
+    } else {
+      syncGuruStorage();
+    }
+
+    function apply() {
+      var q = search.value.trim().toLowerCase();
+      filterTable(tbody, function (tr) {
+        if (!q) return true;
+        var d = tr.dataset;
+        return (d.nama + ' ' + d.nip + ' ' + d.mapelNama).toLowerCase().indexOf(q) > -1;
+      });
     }
 
     function openForm(tr) {
@@ -339,8 +415,9 @@
       if (e.target.closest('.Doniza_js_delete')) {
         if (confirm('Apakah Anda yakin ingin menghapus data guru ini?')) {
           tr.remove();
+          syncGuruStorage();
           apply();
-          showAlert('success', 'Data guru berhasil dihapus.');
+          showAlert('success', 'Data guru berhasil dihapus secara permanen.');
         }
       }
     });
@@ -369,6 +446,7 @@
         renderRow(tr, d);
         tbody.insertBefore(tr, $('.Doniza_empty_row', tbody));
       }
+      syncGuruStorage();
       search.value = '';
       apply();
       closeModal(modal);
@@ -404,9 +482,10 @@
   }
 
   /* =========================================================
-     ABSENSI
+     ABSENSI (Tersinkronisasi dengan LocalStorage)
      ========================================================= */
   var STATUS_NAMA = { H: 'Hadir', I: 'Izin', S: 'Sakit', A: 'Alpha' };
+  var NAMA_STATUS = { Hadir: 'H', Izin: 'I', Sakit: 'S', Alpha: 'A' };
 
   function paintStatus(sel) {
     sel.className = 'Doniza_status_select Doniza_s_' + sel.value.toLowerCase();
@@ -418,24 +497,54 @@
     var selKelas = $('#Doniza_selKelas');
     var tgl = $('#Doniza_tanggal');
 
+    // Bangun ulang daftar baris siswa agar siswa baru dari localStorage ikut muncul
+    function rebuildAbsensiRows() {
+      var emptyRow = $('.Doniza_empty_row', tbody);
+      $$('tr[data-row]', tbody).forEach(function (tr) { tr.remove(); });
+      SISWA.forEach(function (s) {
+        var kls = byId(KELAS, s.kelas);
+        var tr = document.createElement('tr');
+        tr.setAttribute('data-row', '');
+        tr.dataset.nis = s.nis;
+        tr.dataset.kelas = String(s.kelas);
+        tr.innerHTML =
+          '<td class="Doniza_text_center Doniza_muted"></td>' +
+          '<td class="Doniza_muted">' + esc(s.nis) + '</td>' +
+          '<td class="Doniza_strong">' + esc(s.nama) + '</td>' +
+          '<td>' + esc(kls ? kls.nama : '-') + '</td>' +
+          '<td>' +
+          '<select class="Doniza_status_select Doniza_s_hadir">' +
+          '<option value="Hadir">Hadir</option>' +
+          '<option value="Izin">Izin</option>' +
+          '<option value="Sakit">Sakit</option>' +
+          '<option value="Alpha">Alpha</option>' +
+          '</select>' +
+          '</td>';
+        tbody.insertBefore(tr, emptyRow);
+      });
+    }
+
     function apply() {
       filterTable(tbody, function (tr) { return tr.dataset.kelas === selKelas.value; });
     }
+
     function loadStatus() {
       var idx = TANGGAL.indexOf(tgl.value);
       $$('tr[data-row]', tbody).forEach(function (tr) {
         var sel = $('select', tr);
         var rec = ABSENSI[tr.dataset.nis];
-        var code = (idx > -1 && rec) ? rec.charAt(idx) : 'H';
-        sel.value = STATUS_NAMA[code];
+        var code = (idx > -1 && rec && rec.charAt(idx)) ? rec.charAt(idx) : 'H';
+        sel.value = STATUS_NAMA[code] || 'Hadir';
         paintStatus(sel);
       });
     }
+
     function refreshKelas() {
       setOptions(selKelas, kelasItems(kelasOf(getPill(pills))), null);
       apply();
     }
 
+    rebuildAbsensiRows();
     tgl.value = todayISO();
     initPills(pills, refreshKelas);
     selKelas.addEventListener('change', apply);
@@ -446,8 +555,39 @@
     });
 
     $('#Doniza_btnSimpan').addEventListener('click', function () {
+      var tanggalDipilih = tgl.value;
+      if (!tanggalDipilih) {
+        showAlert('error', 'Pilih tanggal absensi terlebih dahulu.');
+        return;
+      }
+
+      var idx = TANGGAL.indexOf(tanggalDipilih);
+      if (idx === -1) {
+        TANGGAL.push(tanggalDipilih);
+        idx = TANGGAL.length - 1;
+        // Pad rekaman siswa lain dengan 'H' agar panjang string sejajar dengan indeks TANGGAL
+        SISWA.forEach(function (s) {
+          var r = ABSENSI[s.nis] || '';
+          while (r.length < idx) r += 'H';
+          ABSENSI[s.nis] = r + 'H';
+        });
+        DB.save('tanggal', TANGGAL);
+      }
+
+      // Simpan status tiap siswa di kelas yang sedang dibuka
+      $$('tr[data-row]', tbody).forEach(function (tr) {
+        if (tr.dataset.kelas !== selKelas.value) return;
+        var nis = tr.dataset.nis;
+        var kode = NAMA_STATUS[$('select', tr).value] || 'H';
+        var rec = ABSENSI[nis] || '';
+        while (rec.length <= idx) rec += 'H';
+        ABSENSI[nis] = rec.substring(0, idx) + kode + rec.substring(idx + 1);
+      });
+
+      DB.save('absensi', ABSENSI);
+
       var kls = byId(KELAS, selKelas.value);
-      showAlert('success', 'Absensi kelas ' + (kls ? kls.nama : '') + ' tanggal ' + tgl.value + ' berhasil disimpan.');
+      showAlert('success', 'Absensi kelas ' + (kls ? kls.nama : '') + ' tanggal ' + tanggalDipilih + ' berhasil disimpan.');
       window.scrollTo({ top: 0, behavior: 'smooth' });
     });
 
@@ -456,7 +596,7 @@
   }
 
   /* =========================================================
-     NILAI
+     NILAI (Tersinkronisasi dengan LocalStorage)
      ========================================================= */
   function hitungRata(t, u, a) {
     return Math.round(((+t + +u + +a) / 3) * 100) / 100;
@@ -475,6 +615,60 @@
     setOptions(selMapel, MAPEL.map(function (m) { return { v: m.id, t: m.nama }; }), '-- Semua Mapel --');
     setOptions(selSem, SEMESTER.map(function (s) { return { v: s, t: s }; }), '-- Semua Semester --');
 
+    // Bangun ulang tabel nilai langsung dari array NILAI di LocalStorage
+    function rebuildNilaiTable() {
+      var emptyRow = $('.Doniza_empty_row', tbody);
+      $$('tr[data-row]', tbody).forEach(function (tr) { tr.remove(); });
+
+      NILAI.forEach(function (r, idx) {
+        var nis = r[0];
+        var mapelId = r[1];
+        var semester = r[2];
+        var tugas = r[3];
+        var uts = r[4];
+        var uas = r[5];
+
+        var siswa = null;
+        for (var i = 0; i < SISWA.length; i++) {
+          if (SISWA[i].nis === nis) { siswa = SISWA[i]; break; }
+        }
+        if (!siswa) return;
+
+        var mp = byId(MAPEL, mapelId);
+        var mapelNama = mp ? mp.nama : '-';
+        var rata = hitungRata(tugas, uts, uas);
+
+        var tr = document.createElement('tr');
+        tr.setAttribute('data-row', '');
+        tr.dataset.nilaiIdx = String(idx);
+        tr.dataset.nis = nis;
+        tr.dataset.nama = siswa.nama;
+        tr.dataset.kelas = String(siswa.kelas);
+        tr.dataset.mapel = String(mapelId);
+        tr.dataset.mapelNama = mapelNama;
+        tr.dataset.semester = semester;
+        tr.dataset.tugas = String(tugas);
+        tr.dataset.uts = String(uts);
+        tr.dataset.uas = String(uas);
+
+        tr.innerHTML =
+          '<td class="Doniza_text_center Doniza_muted"></td>' +
+          '<td class="Doniza_muted">' + esc(nis) + '</td>' +
+          '<td class="Doniza_strong">' + esc(siswa.nama) + '</td>' +
+          '<td>' + esc(mapelNama) + '</td>' +
+          '<td>' + esc(semester) + '</td>' +
+          '<td class="Doniza_text_center">' + tugas + '</td>' +
+          '<td class="Doniza_text_center">' + uts + '</td>' +
+          '<td class="Doniza_text_center">' + uas + '</td>' +
+          '<td class="Doniza_text_center Doniza_strong">' + rata + '</td>' +
+          '<td><div class="Doniza_actions">' +
+          '<button type="button" class="Doniza_btn_icon Doniza_btn_edit Doniza_js_edit" title="Edit Nilai"><i class="fa-solid fa-pen"></i></button>' +
+          '</div></td>';
+
+        tbody.insertBefore(tr, emptyRow);
+      });
+    }
+
     function apply() {
       filterTable(tbody, function (tr) {
         var d = tr.dataset;
@@ -484,15 +678,18 @@
         return true;
       });
     }
+
     function refreshKelas() {
       setOptions(selKelas, kelasItems(kelasOf(getPill(pills))), null);
       apply();
     }
+
     function previewAvg() {
       var f = form.elements;
       $('#Doniza_avgPreview').textContent = hitungRata(f.tugas.value || 0, f.uts.value || 0, f.uas.value || 0);
     }
 
+    rebuildNilaiTable();
     initPills(pills, refreshKelas);
     selKelas.addEventListener('change', apply);
     selMapel.addEventListener('change', apply);
@@ -517,26 +714,42 @@
     form.addEventListener('submit', function (e) {
       e.preventDefault();
       var f = form.elements;
-      var rata = hitungRata(f.tugas.value, f.uts.value, f.uas.value);
-      editing.dataset.semester = f.semester.value.trim();
-      editing.dataset.tugas = f.tugas.value;
-      editing.dataset.uts = f.uts.value;
-      editing.dataset.uas = f.uas.value;
-      editing.cells[4].textContent = f.semester.value.trim();
-      editing.cells[5].textContent = f.tugas.value;
-      editing.cells[6].textContent = f.uts.value;
-      editing.cells[7].textContent = f.uas.value;
+      var semVal = f.semester.value.trim();
+      var tugasVal = Number(f.tugas.value);
+      var utsVal = Number(f.uts.value);
+      var uasVal = Number(f.uas.value);
+      var rata = hitungRata(tugasVal, utsVal, uasVal);
+
+      // Perbarui array NILAI dan simpan ke LocalStorage
+      var idx = Number(editing.dataset.nilaiIdx);
+      if (NILAI[idx]) {
+        NILAI[idx][2] = semVal;
+        NILAI[idx][3] = tugasVal;
+        NILAI[idx][4] = utsVal;
+        NILAI[idx][5] = uasVal;
+        DB.save('nilai', NILAI);
+      }
+
+      editing.dataset.semester = semVal;
+      editing.dataset.tugas = tugasVal;
+      editing.dataset.uts = utsVal;
+      editing.dataset.uas = uasVal;
+      editing.cells[4].textContent = semVal;
+      editing.cells[5].textContent = tugasVal;
+      editing.cells[6].textContent = utsVal;
+      editing.cells[7].textContent = uasVal;
       editing.cells[8].textContent = rata;
+
       closeModal(modal);
       apply();
-      showAlert('success', 'Nilai ' + editing.dataset.nama + ' berhasil diperbarui.');
+      showAlert('success', 'Nilai ' + editing.dataset.nama + ' berhasil diperbarui secara permanen.');
     });
 
     refreshKelas();
   }
 
   /* =========================================================
-     INPUT NILAI (halaman form)
+     INPUT NILAI (Simpan nilai baru ke LocalStorage)
      ========================================================= */
   function initInputNilai() {
     var form = $('#Doniza_formInputNilai');
@@ -548,7 +761,6 @@
     setOptions(selKelas, kelasItems(KELAS), '-- Pilih Kelas --');
     setOptions(selMapel, MAPEL.map(function (m) { return { v: m.id, t: m.nama }; }), '-- Pilih Mata Pelajaran --');
 
-    // Pilih siswa -> kelasnya terisi otomatis
     selSiswa.addEventListener('change', function () {
       for (var i = 0; i < SISWA.length; i++) {
         if (SISWA[i].nis === selSiswa.value) { selKelas.value = SISWA[i].kelas; return; }
@@ -558,9 +770,32 @@
     form.addEventListener('submit', function (e) {
       e.preventDefault();
       var f = form.elements;
+      var nis = selSiswa.value;
+      var mapelId = Number(selMapel.value);
+      var semester = f.semester ? f.semester.value.trim() : SEMESTER[0];
+      var tugas = Number(f.tugas.value);
+      var uts = Number(f.uts.value);
+      var uas = Number(f.uas.value);
+
+      // Cek apakah kombinasi (nis, mapelId, semester) sudah ada; jika ada update, jika belum tambah baru
+      var foundIdx = -1;
+      for (var i = 0; i < NILAI.length; i++) {
+        if (NILAI[i][0] === nis && Number(NILAI[i][1]) === mapelId && NILAI[i][2] === semester) {
+          foundIdx = i;
+          break;
+        }
+      }
+
+      if (foundIdx > -1) {
+        NILAI[foundIdx] = [nis, mapelId, semester, tugas, uts, uas];
+      } else {
+        NILAI.push([nis, mapelId, semester, tugas, uts, uas]);
+      }
+      DB.save('nilai', NILAI);
+
       var nama = selSiswa.options[selSiswa.selectedIndex].text;
-      var rata = hitungRata(f.tugas.value, f.uts.value, f.uas.value);
-      showAlert('success', 'Sukses! Nilai ' + nama + ' berhasil disimpan (rata-rata ' + rata + ').');
+      var rata = hitungRata(tugas, uts, uas);
+      showAlert('success', 'Sukses! Nilai ' + nama + ' berhasil disimpan ke penyimpanan lokal (rata-rata ' + rata + ').');
       form.reset();
       window.scrollTo({ top: 0, behavior: 'smooth' });
     });
@@ -620,7 +855,7 @@
   }
 
   /* =========================================================
-     KONTAK (form kirim pesan ke pemilik website)
+     KONTAK
      ========================================================= */
   function initKontak() {
     var form = $('#Doniza_formKontak');
@@ -690,7 +925,8 @@
     var form = $('#Doniza_formLogin');
     form.addEventListener('submit', function (e) {
       e.preventDefault();
-      // Versi demo: tidak ada pengecekan ke database.
+      var user = form.elements.username ? form.elements.username.value.trim() : 'Admin';
+      localStorage.setItem('doniza_sikolah_user', user || 'Admin');
       window.location.href = 'index.html';
     });
   }
