@@ -55,22 +55,47 @@
   }
 
   /* ---------- Cetak data siswa ---------- */
-  function initPrintSiswa() {
+ function initPrintSiswa() {
     var jur = params.get('id_jurusan') || '';
-    var rows = document.querySelectorAll('#Doniza_tbodyData tr[data-jurusan]');
-    var n = 0;
-    rows.forEach(function (tr) {
-      var tampil = !jur || tr.getAttribute('data-jurusan') === jur;
-      tr.hidden = !tampil;
-      if (tampil) { n++; tr.cells[0].textContent = n; }
+    var tbody = $('#Doniza_tbodyData');
+    var list = SISWA.filter(function (s) {
+      return !jur || String(s.jurusan) === String(jur);
     });
+
+    var html = '';
+    list.forEach(function (s, idx) {
+      var j = byId(JURUSAN, s.jurusan);
+      var k = byId(KELAS, s.kelas);
+      html += '<tr>' +
+        '<td class="Doniza_text_center">' + (idx + 1) + '</td>' +
+        '<td>' + esc(s.nis) + '</td>' +
+        '<td>' + esc(s.nama) + '</td>' +
+        '<td>' + esc(j ? j.nama : '-') + '</td>' +
+        '<td>' + esc(k ? k.nama : '-') + '</td>' +
+        '<td>' + esc(s.jk) + '</td>' +
+        '</tr>';
+    });
+
     var judul = 'Laporan Data Siswa Aktif';
-    var j = jur ? byId(JURUSAN, jur) : null;
-    if (j) judul += ' - Jurusan ' + j.nama;
+    var jObj = jur ? byId(JURUSAN, jur) : null;
+    if (jObj) judul += ' - Jurusan ' + jObj.nama;
     $('#Doniza_judulLaporan').textContent = judul;
-    if (n === 0) {
-      $('#Doniza_tbodyData').insertAdjacentHTML('beforeend', '<tr><td colspan="6" class="Doniza_kosong">Tidak ada data siswa untuk jurusan ini.</td></tr>');
-    }
+
+    tbody.innerHTML = html || '<tr><td colspan="6" class="Doniza_kosong">Tidak ada data siswa untuk jurusan ini.</td></tr>';
+  }
+   function initPrintGuru() {
+    if (!Array.isArray(GURU)) return; // Tetap pakai bawaan HTML jika belum pernah diubah
+    var tbody = $('#Doniza_tbodyData');
+    var html = '';
+    GURU.forEach(function (g, idx) {
+      html += '<tr>' +
+        '<td class="Doniza_text_center">' + (idx + 1) + '</td>' +
+        '<td>' + esc(g.nip) + '</td>' +
+        '<td>' + esc(g.nama) + '</td>' +
+        '<td>' + esc(g.mapelNama) + '</td>' +
+        '</tr>';
+    });
+    tbody.innerHTML = html || '<tr><td colspan="4" class="Doniza_kosong">Belum ada data guru.</td></tr>';
   }
 
   /* ---------- Cetak absensi ---------- */
@@ -187,8 +212,9 @@
   }
 
   /* ---------- Jalankan ---------- */
-  var routes = {
+ var routes = {
     print_siswa: initPrintSiswa,
+    print_guru: initPrintGuru,
     print_absensi: initPrintAbsensi,
     print_nilai: initPrintNilai
   };
